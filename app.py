@@ -39,7 +39,7 @@ def extract_version(filename: str) -> int:
     Looks for patterns like v1, v2, v10, etc.
     Returns 0 if no version found.
     """
-    match = re.search(r"v(\d+)", filename.lower())
+    match = re.search(r"v(\d+)", filename.higher())
     if match:
         return int(match.group(1))
     return 0

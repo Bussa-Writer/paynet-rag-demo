@@ -5,13 +5,14 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.document_loaders import Docx2txtLoader
 import tempfile
 import os
+import re
+import openai
 from openai import OpenAIError
 
-st.set_page_config(page_title="RAG Demo - Latest Docs Only", layout="wide")
+st.set_page_config(page_title="RAG Demo", layout="wide")
+st.title("📄 RAG Demo - Latest Version Only")
 
-st.title("📄 RAG Demo with DOCX Upload (Latest Version)")
-
-# 1️⃣ Ask user for OpenAI API key
+# 1️⃣ Ask for API Key
 api_key = st.text_input(
     "Enter your OpenAI API Key",
     type="password",
@@ -21,9 +22,9 @@ if not api_key:
     st.warning("Please enter your OpenAI API key to continue.")
     st.stop()
 
-# 2️⃣ Upload .docx files
+# 2️⃣ Upload DOCX files
 uploaded_files = st.file_uploader(
-    "Upload one or more DOCX files (latest version will be used, files must contain '_v2_' in the name)",
+    "Upload DOCX files (latest version detection)",
     type=["docx"],
     accept_multiple_files=True
 )
@@ -31,29 +32,40 @@ if not uploaded_files:
     st.info("Please upload at least one DOCX file.")
     st.stop()
 
-# 2a️⃣ Filter only _v2_ files
-latest_files = [f for f in uploaded_files if "_v2_" in f.name]
-if not latest_files:
-    st.error("No files with '_v2_' found. Please upload at least one latest version file.")
-    st.stop()
+# 3️⃣ Extract version from filename
+def extract_version(filename: str) -> int:
+    match = re.search(r"v(\d+)", filename.lower())
+    return int(match.group(1)) if match else 0
 
-# 3️⃣ Load latest documents
+# 4️⃣ Keep only latest version for each base filename
+latest_files = {}
+for file in uploaded_files:
+    base_name = re.sub(r"v\d+", "", file.name.lower())
+    version = extract_version(file.name)
+    if base_name not in latest_files or version > latest_files[base_name][1]:
+        latest_files[base_name] = (file, version)
+
+latest_docs_files = [f for f, v in latest_files.values()]
+
+# 5️⃣ Load documents and attach version metadata
 docs = []
-for uploaded_file in latest_files:
+for uploaded_file in latest_docs_files:
+    version = extract_version(uploaded_file.name)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_file:
         tmp_file.write(uploaded_file.read())
         loader = Docx2txtLoader(tmp_file.name)
         loaded_docs = loader.load()
         for doc in loaded_docs:
             doc.metadata["source"] = uploaded_file.name
+            doc.metadata["version"] = version
         docs.extend(loaded_docs)
-    os.unlink(tmp_file.name)  # delete temp file
+    os.unlink(tmp_file.name)
 
-# 4️⃣ Split documents into chunks
+# 6️⃣ Split into chunks
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 split_docs = text_splitter.split_documents(docs)
 
-# 5️⃣ Create embeddings and vectorstore
+# 7️⃣ Create embeddings
 try:
     embeddings = OpenAIEmbeddings(openai_api_key=api_key)
     vectordb = Chroma.from_documents(split_docs, embeddings)
@@ -61,18 +73,24 @@ except OpenAIError as e:
     st.error(f"OpenAI API error: {e}")
     st.stop()
 
-st.success("✅ Latest documents processed and vectorstore created successfully!")
+st.success("✅ Latest version documents processed!")
 
-# 6️⃣ Ask a query and retrieve **single best answer**
+# 8️⃣ Query with version-aware sorting
 query = st.text_input("Ask a question about your latest documents:")
 if query:
     try:
-        results = vectordb.similarity_search(query, k=1)  # only top 1 chunk
+        results = vectordb.similarity_search(query, k=5)  # top 5 matches
+
         if results:
-            doc = results[0]
-            st.write(f"**Answer (latest info from {doc.metadata.get('source','unknown')}):**")
+            # Filter for **highest version only**
+            max_version = max(doc.metadata.get("version", 0) for doc in results)
+            latest_results = [doc for doc in results if doc.metadata.get("version", 0) == max_version]
+
+            # Take only the top 1 chunk from latest version
+            doc = latest_results[0]
+            st.write(f"**Answer (latest info from {doc.metadata.get('source')}):**")
             st.write(doc.page_content)
         else:
-            st.info("No relevant content found in the latest documents.")
+            st.info("No matching content found in latest documents.")
     except Exception as e:
         st.error(f"Error retrieving results: {e}")
